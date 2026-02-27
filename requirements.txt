@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+scikit-learn
+gensim
+faiss-cpu
+fastapi
+uvicorn
+pickle-mixin
