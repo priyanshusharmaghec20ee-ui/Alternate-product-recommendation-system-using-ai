@@ -1,32 +1,28 @@
 import re
 import numpy as np
 import pandas as pd
-import pickle
-
 from fastapi import FastAPI
 from pydantic import BaseModel
 from sklearn.metrics.pairwise import cosine_similarity
 from gensim.models import Word2Vec
-
-import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
-
+import uvicorn
 
 app = FastAPI()
 
-nltk.download("stopwords")
-nltk.download("wordnet")
+print("Loading model and dataset...")
+
+# Load trained model (make sure you saved using model.save())
+word2vec_model = Word2Vec.load("word2vec_model.model")
+
+# Load dataset
+df_master = pd.read_pickle("df_master.pkl")
 
 stop_words = set(stopwords.words("english"))
 lemmatizer = WordNetLemmatizer()
 
-print("Loading model and dataset...")
-
-word2vec_model = Word2Vec.load("word2vec_model.pkl")
-df_master = pd.read_pickle("df_master.pkl")
-
-print("Loaded successfully.")
+print("Generating product embeddings...")
 
 def preprocess_text(text):
     text = str(text).lower()
@@ -35,7 +31,6 @@ def preprocess_text(text):
     words = [w for w in words if w not in stop_words]
     words = [lemmatizer.lemmatize(w) for w in words]
     return words
-
 
 def get_sentence_embedding(words):
     vectors = [
@@ -49,30 +44,24 @@ def get_sentence_embedding(words):
 
     return np.mean(vectors, axis=0)
 
-
-print("Generating product embeddings...")
-
+# Precompute embeddings once at startup
 combined_texts = (
     df_master["title"].fillna("") + " " +
     df_master["description"].fillna("")
 )
 
-product_embeddings = []
-
-for text in combined_texts:
-    words = preprocess_text(text)
-    emb = get_sentence_embedding(words)
-    product_embeddings.append(emb)
-
-product_embeddings = np.array(product_embeddings)
+product_embeddings = np.array([
+    get_sentence_embedding(preprocess_text(text))
+    for text in combined_texts
+])
 
 print("Embeddings ready.")
 
-
 def recommend_products(query, n=10):
 
-    query_words = preprocess_text(query)
-    query_vector = get_sentence_embedding(query_words).reshape(1, -1)
+    query_vector = get_sentence_embedding(
+        preprocess_text(query)
+    ).reshape(1, -1)
 
     similarities = cosine_similarity(query_vector, product_embeddings)[0]
 
@@ -96,7 +85,6 @@ def recommend_products(query, n=10):
     ].to_dict(orient="records")
 
 
-
 class QueryRequest(BaseModel):
     query: str
     n: int = 10
@@ -104,6 +92,9 @@ class QueryRequest(BaseModel):
 
 @app.post("/recommend")
 def recommend(req: QueryRequest):
-    return {
-        "results": recommend_products(req.query, req.n)
-    }
+    return {"results": recommend_products(req.query, req.n)}
+
+
+# For local testing
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
