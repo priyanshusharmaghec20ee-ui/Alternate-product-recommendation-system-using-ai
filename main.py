@@ -3,12 +3,10 @@ import numpy as np
 import pandas as pd
 import pickle
 import faiss
-import nltk
 from fastapi import FastAPI
 from pydantic import BaseModel
 from gensim.models import Word2Vec
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 import uvicorn
 
 app = FastAPI()
@@ -16,27 +14,7 @@ app = FastAPI()
 print("🚀 Starting backend...")
 
 # =====================================================
-# SAFE NLTK SETUP (AUTO DOWNLOAD IF MISSING)
-# =====================================================
-
-def ensure_nltk_data():
-    try:
-        stopwords.words("english")
-    except LookupError:
-        nltk.download("stopwords")
-
-    try:
-        nltk.data.find("corpora/wordnet")
-    except LookupError:
-        nltk.download("wordnet")
-
-ensure_nltk_data()
-
-stop_words = set(stopwords.words("english"))
-lemmatizer = WordNetLemmatizer()
-
-# =====================================================
-# LOAD MODELS & DATA
+# LOAD FILES
 # =====================================================
 
 print("📦 Loading Word2Vec model...")
@@ -56,15 +34,16 @@ with open("indices.pkl", "rb") as f:
 print("✅ All files loaded successfully.")
 
 # =====================================================
-# TEXT PREPROCESSING
+# SIMPLE PREPROCESSING (NO NLTK)
 # =====================================================
+
+stop_words = set(ENGLISH_STOP_WORDS)
 
 def preprocess_text(text):
     text = str(text).lower()
     text = re.sub(r"[^a-zA-Z\s]", "", text)
     words = text.split()
     words = [w for w in words if w not in stop_words]
-    words = [lemmatizer.lemmatize(w) for w in words]
     return words
 
 def get_sentence_embedding(words):
@@ -80,19 +59,17 @@ def get_sentence_embedding(words):
     return np.mean(vectors, axis=0)
 
 # =====================================================
-# RECOMMENDATION FUNCTION (FAISS BASED)
+# RECOMMENDATION FUNCTION
 # =====================================================
 
 def recommend_products(query, n=10):
 
     query_words = preprocess_text(query)
     query_vector = get_sentence_embedding(query_words)
-
     query_vector = np.array([query_vector]).astype("float32")
 
     distances, faiss_indices = faiss_index.search(query_vector, n)
 
-    # Handle both list or dict type indices.pkl
     if isinstance(indices, dict):
         matched_indices = [indices[i] for i in faiss_indices[0] if i in indices]
     else:
@@ -101,7 +78,6 @@ def recommend_products(query, n=10):
         ]
 
     results = df_master.iloc[matched_indices].copy()
-
     results["similarity_score"] = distances[0][:len(results)]
 
     return results[
