@@ -1,9 +1,10 @@
 import re
 import numpy as np
 import pandas as pd
+import pickle
+import faiss
 from fastapi import FastAPI
 from pydantic import BaseModel
-from sklearn.metrics.pairwise import cosine_similarity
 from gensim.models import Word2Vec
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
@@ -11,18 +12,34 @@ import uvicorn
 
 app = FastAPI()
 
-print("Loading model and dataset...")
+print("🚀 Loading models and data...")
 
-# Load trained model (make sure you saved using model.save())
-word2vec_model = Word2Vec.load("word2vec_model.model")
+# ---------------------------
+# LOAD FILES
+# ---------------------------
+
+# Load Word2Vec (saved via pickle)
+with open("word2vec_model.pkl", "rb") as f:
+    word2vec_model = pickle.load(f)
 
 # Load dataset
 df_master = pd.read_pickle("df_master.pkl")
 
+# Load FAISS index
+faiss_index = faiss.read_index("faiss_index.bin")
+
+# Load index mapping
+with open("indices.pkl", "rb") as f:
+    indices = pickle.load(f)
+
+print("✅ All files loaded successfully.")
+
+# ---------------------------
+# NLP SETUP
+# ---------------------------
+
 stop_words = set(stopwords.words("english"))
 lemmatizer = WordNetLemmatizer()
-
-print("Generating product embeddings...")
 
 def preprocess_text(text):
     text = str(text).lower()
@@ -44,31 +61,25 @@ def get_sentence_embedding(words):
 
     return np.mean(vectors, axis=0)
 
-# Precompute embeddings once at startup
-combined_texts = (
-    df_master["title"].fillna("") + " " +
-    df_master["description"].fillna("")
-)
-
-product_embeddings = np.array([
-    get_sentence_embedding(preprocess_text(text))
-    for text in combined_texts
-])
-
-print("Embeddings ready.")
+# ---------------------------
+# RECOMMENDATION FUNCTION
+# ---------------------------
 
 def recommend_products(query, n=10):
 
-    query_vector = get_sentence_embedding(
-        preprocess_text(query)
-    ).reshape(1, -1)
+    query_words = preprocess_text(query)
+    query_vector = get_sentence_embedding(query_words)
 
-    similarities = cosine_similarity(query_vector, product_embeddings)[0]
+    query_vector = np.array([query_vector]).astype("float32")
 
-    top_indices = similarities.argsort()[::-1][:n]
+    # FAISS search
+    distances, faiss_indices = faiss_index.search(query_vector, n)
 
-    results = df_master.iloc[top_indices].copy()
-    results["similarity_score"] = similarities[top_indices]
+    matched_indices = [indices[i] for i in faiss_indices[0]]
+
+    results = df_master.iloc[matched_indices].copy()
+
+    results["similarity_score"] = distances[0]
 
     return results[
         [
@@ -85,6 +96,10 @@ def recommend_products(query, n=10):
     ].to_dict(orient="records")
 
 
+# ---------------------------
+# API STRUCTURE
+# ---------------------------
+
 class QueryRequest(BaseModel):
     query: str
     n: int = 10
@@ -95,6 +110,9 @@ def recommend(req: QueryRequest):
     return {"results": recommend_products(req.query, req.n)}
 
 
-# For local testing
+# ---------------------------
+# LOCAL RUN
+# ---------------------------
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
