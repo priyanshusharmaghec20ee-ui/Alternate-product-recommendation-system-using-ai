@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pickle
 import faiss
+import nltk
 from fastapi import FastAPI
 from pydantic import BaseModel
 from gensim.models import Word2Vec
@@ -12,34 +13,51 @@ import uvicorn
 
 app = FastAPI()
 
-print("🚀 Loading models and data...")
+print("🚀 Starting backend...")
 
-# ---------------------------
-# LOAD FILES
-# ---------------------------
+# =====================================================
+# SAFE NLTK SETUP (AUTO DOWNLOAD IF MISSING)
+# =====================================================
 
-# Load Word2Vec (saved via pickle)
+def ensure_nltk_data():
+    try:
+        stopwords.words("english")
+    except LookupError:
+        nltk.download("stopwords")
+
+    try:
+        nltk.data.find("corpora/wordnet")
+    except LookupError:
+        nltk.download("wordnet")
+
+ensure_nltk_data()
+
+stop_words = set(stopwords.words("english"))
+lemmatizer = WordNetLemmatizer()
+
+# =====================================================
+# LOAD MODELS & DATA
+# =====================================================
+
+print("📦 Loading Word2Vec model...")
 with open("word2vec_model.pkl", "rb") as f:
     word2vec_model = pickle.load(f)
 
-# Load dataset
+print("📦 Loading dataset...")
 df_master = pd.read_pickle("df_master.pkl")
 
-# Load FAISS index
+print("📦 Loading FAISS index...")
 faiss_index = faiss.read_index("faiss_index.bin")
 
-# Load index mapping
+print("📦 Loading index mapping...")
 with open("indices.pkl", "rb") as f:
     indices = pickle.load(f)
 
 print("✅ All files loaded successfully.")
 
-# ---------------------------
-# NLP SETUP
-# ---------------------------
-
-stop_words = set(stopwords.words("english"))
-lemmatizer = WordNetLemmatizer()
+# =====================================================
+# TEXT PREPROCESSING
+# =====================================================
 
 def preprocess_text(text):
     text = str(text).lower()
@@ -61,9 +79,9 @@ def get_sentence_embedding(words):
 
     return np.mean(vectors, axis=0)
 
-# ---------------------------
-# RECOMMENDATION FUNCTION
-# ---------------------------
+# =====================================================
+# RECOMMENDATION FUNCTION (FAISS BASED)
+# =====================================================
 
 def recommend_products(query, n=10):
 
@@ -72,14 +90,19 @@ def recommend_products(query, n=10):
 
     query_vector = np.array([query_vector]).astype("float32")
 
-    # FAISS search
     distances, faiss_indices = faiss_index.search(query_vector, n)
 
-    matched_indices = [indices[i] for i in faiss_indices[0]]
+    # Handle both list or dict type indices.pkl
+    if isinstance(indices, dict):
+        matched_indices = [indices[i] for i in faiss_indices[0] if i in indices]
+    else:
+        matched_indices = [
+            indices[i] for i in faiss_indices[0] if i < len(indices)
+        ]
 
     results = df_master.iloc[matched_indices].copy()
 
-    results["similarity_score"] = distances[0]
+    results["similarity_score"] = distances[0][:len(results)]
 
     return results[
         [
@@ -95,24 +118,25 @@ def recommend_products(query, n=10):
         ]
     ].to_dict(orient="records")
 
-
-# ---------------------------
+# =====================================================
 # API STRUCTURE
-# ---------------------------
+# =====================================================
 
 class QueryRequest(BaseModel):
     query: str
     n: int = 10
 
+@app.get("/")
+def health():
+    return {"status": "Backend running successfully ✅"}
 
 @app.post("/recommend")
 def recommend(req: QueryRequest):
     return {"results": recommend_products(req.query, req.n)}
 
-
-# ---------------------------
+# =====================================================
 # LOCAL RUN
-# ---------------------------
+# =====================================================
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
